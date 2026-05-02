@@ -1,13 +1,33 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>XpensesApp</title>
+
+<!-- PWA Core -->
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#0f1117">
+<meta name="mobile-web-app-capable" content="yes">
+
+<!-- iOS PWA -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="XpensesApp">
+<link rel="apple-touch-icon" href="https://i.ibb.co/VXq0RWQ/ur-pin-large-front-square-600x600-removebg-preview.png">
+
+<!-- Splash screens iOS (optional) -->
+<meta name="apple-touch-fullscreen" content="yes">
+
+<!-- Windows Tile -->
+<meta name="msapplication-TileColor" content="#0f1117">
+<meta name="msapplication-TileImage" content="https://i.ibb.co/VXq0RWQ/ur-pin-large-front-square-600x600-removebg-preview.png">
+
+<!-- SEO / General -->
+<meta name="description" content="Personal Finance Tracker untuk PenXpenses & AsekXpenses">
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" type="image/png" href="https://i.ibb.co/VXq0RWQ/ur-pin-large-front-square-600x600-removebg-preview.png">
 <style>
 /* ===== RESET ===== */
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -687,11 +707,11 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 
 // =====================================================
 // PROFILE CONFIG — kedua user pakai 1 Supabase
-// Row berbeda: pen_user & asek_user
+// Row: pacar_main (pen) & hachiman_main (asek) — sesuai Supabase
 // =====================================================
 const PROFILES = {
   pen: {
-    id: 'pen_user',           // row id di Supabase
+    id: 'pacar_main',         // ← row id di Supabase (harus sama dengan kolom id di tabel user_data & user_pin)
     name: 'PenXpenses',
     label: 'PenXpenses ❤️',
     accent: '#ee2456',
@@ -701,7 +721,7 @@ const PROFILES = {
     pinSecret: 'asekganteng',
   },
   asek: {
-    id: 'asek_user',
+    id: 'hachiman_main',     // ← row id di Supabase
     name: 'AsekXpenses',
     label: 'AsekXpenses 🎯',
     accent: '#6366f1',
@@ -756,12 +776,20 @@ async function loadData() {
 async function saveData() {
   localStorage.setItem(PROFILE.storageKey, JSON.stringify(DB));
   try {
-    await sbFetch(`/rest/v1/user_data?id=eq.${PROFILE.id}`, {
-      method: 'PATCH',
-      headers: { 'Prefer': 'return=minimal' },
-      body: JSON.stringify({ data: DB, updated_at: new Date().toISOString() })
+    // UPSERT: update kalau row ada, insert kalau belum ada (aman)
+    await sbFetch(`/rest/v1/user_data`, {
+      method: 'POST',
+      headers: {
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
+      },
+      body: JSON.stringify({
+        id: PROFILE.id,
+        user_key: PROFILE.id.replace('_main', ''),
+        data: DB,
+        updated_at: new Date().toISOString()
+      })
     });
-  } catch(e) { /* localStorage already saved */ }
+  } catch(e) { /* localStorage already saved — offline mode */ }
 }
 
 async function pinGetRemote() {
@@ -775,10 +803,17 @@ async function pinGetRemote() {
 async function pinSaveRemote(pin) {
   pinRemote = pin;
   try {
-    await sbFetch(`/rest/v1/user_pin?id=eq.${PROFILE.id}`, {
-      method: 'PATCH',
-      headers: { 'Prefer': 'return=minimal' },
-      body: JSON.stringify({ pin_hash: pin, updated_at: new Date().toISOString() })
+    // UPSERT: aman dipakai walau row belum ada
+    await sbFetch(`/rest/v1/user_pin`, {
+      method: 'POST',
+      headers: {
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
+      },
+      body: JSON.stringify({
+        id: PROFILE.id,
+        pin_hash: pin,
+        updated_at: new Date().toISOString()
+      })
     });
   } catch(e) {}
 }
@@ -1572,8 +1607,71 @@ document.getElementById('profile-screen').style.display='flex';
 document.getElementById('pin-screen').style.display='none';
 document.getElementById('app').style.display='none';
 
-// PWA
-if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('service-worker.js').catch(()=>{}));}
+// =====================================================
+// PWA — Service Worker + Deeplink Shortcuts
+// =====================================================
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', async () => {
+    try {
+      const reg = await navigator.serviceWorker.register('./service-worker.js', { scope: './' });
+      console.log('[SW] Registered:', reg.scope);
+
+      // Listen pesan dari SW (mis. SYNC_READY)
+      navigator.serviceWorker.addEventListener('message', event => {
+        if (event.data?.type === 'SYNC_READY' && PROFILE) {
+          // Re-try save data yang pending saat offline tadi
+          saveData();
+        }
+      });
+
+      // Update SW kalau ada versi baru
+      reg.addEventListener('updatefound', () => {
+        const newWorker = reg.installing;
+        newWorker?.addEventListener('statechange', () => {
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            toast('🔄 Update tersedia — refresh untuk memperbarui', 'warning', 6000);
+          }
+        });
+      });
+    } catch (e) {
+      console.warn('[SW] Registration failed:', e);
+    }
+  });
+}
+
+// =====================================================
+// PWA — Handle shortcut deeplink (?profile=pen/asek)
+// Memungkinkan "Add to Home Screen" langsung masuk profil
+// =====================================================
+(function handleDeeplink() {
+  const params = new URLSearchParams(window.location.search);
+  const profileParam = params.get('profile');
+  if (profileParam && PROFILES[profileParam]) {
+    // Delay sedikit biar DOM ready
+    window.addEventListener('DOMContentLoaded', () => {
+      selectProfile(profileParam);
+    });
+  }
+})();
+
+// =====================================================
+// PWA — Install prompt (A2HS)
+// =====================================================
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  // Tampilkan hint setelah app pertama kali dibuka
+  setTimeout(() => {
+    if (deferredInstallPrompt && !window.matchMedia('(display-mode: standalone)').matches) {
+      toast('📲 Install app: tap menu browser → "Add to Home Screen"', 'success', 5000);
+    }
+  }, 5000);
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  toast('✅ XpensesApp berhasil diinstall!', 'success', 3000);
+});
 </script>
 </body>
 </html>
