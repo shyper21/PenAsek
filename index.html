@@ -702,8 +702,8 @@ textarea.form-input{resize:vertical;min-height:70px}
 //   pastikan tabel user_data & user_pin sudah ada dengan
 //   kolom id TEXT PRIMARY KEY, data JSONB, updated_at TIMESTAMPTZ
 // =====================================================
-const SUPABASE_URL = 'https://ryckhtyyimqrcdwoptva.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5Y2todHl5aW1xcmNkd29wdHZhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MjczOTMsImV4cCI6MjA5MDIwMzM5M30.a1CLHaytSIYeeKZGujvlLAwOm77O46p_OTzl0ttDbJQ';
+const SUPABASE_URL = 'https://onegwkcxlfccatrxtnet.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9uZWd3a2N4bGZjY2F0cnh0bmV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc2NjI3NzksImV4cCI6MjA5MzIzODc3OX0.mDy0N10e5tWsT-pC95b3aG4XJ-3_oyFrw2sGyh2s8QI';
 
 // =====================================================
 // PROFILE CONFIG — kedua user pakai 1 Supabase
@@ -764,20 +764,49 @@ async function sbFetch(path, opts = {}) {
 }
 
 async function loadData() {
+  console.log('[LOAD] Fetching profile:', PROFILE.id, '| URL:', SUPABASE_URL);
   try {
     const res = await sbFetch(`/rest/v1/user_data?id=eq.${PROFILE.id}&select=data`);
+    console.log('[LOAD] HTTP status:', res.status, res.statusText);
     const rows = await res.json();
-    return rows?.[0]?.data || null;
+    console.log('[LOAD] Rows returned:', JSON.stringify(rows).slice(0, 200));
+
+    if (!res.ok) {
+      const errMsg = rows?.message || rows?.hint || JSON.stringify(rows);
+      console.error('[LOAD] Supabase error:', errMsg);
+      _showDbError('Load gagal: ' + errMsg);
+    }
+
+    if (rows && rows.length > 0 && rows[0].data) {
+      console.log('[LOAD] ✅ Data loaded OK dari Supabase');
+      return rows[0].data;
+    }
+    console.warn('[LOAD] Row kosong — cek ID atau RLS policy');
+    _showDbError('Row tidak ditemukan untuk id=' + PROFILE.id + '. Cek Supabase RLS policy!');
+    return null;
   } catch(e) {
+    console.error('[LOAD] Network/parse error:', e.message);
+    _showDbError('Offline/Network error — pakai localStorage');
     try { const r = localStorage.getItem(PROFILE.storageKey); return r ? JSON.parse(r) : null; } catch(_) { return null; }
   }
+}
+
+// Helper: tampilkan error banner di atas app
+function _showDbError(msg) {
+  const existing = document.getElementById('_db-error-banner');
+  if (existing) existing.remove();
+  const banner = document.createElement('div');
+  banner.id = '_db-error-banner';
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999998;background:#7f1d1d;color:#fca5a5;font-size:.75rem;padding:8px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px;';
+  banner.innerHTML = `<span>⚠️ DB: ${msg}</span><button onclick="document.getElementById('_db-error-banner').remove()" style="background:none;border:none;color:#fca5a5;cursor:pointer;font-size:1rem">×</button>`;
+  document.body.prepend(banner);
 }
 
 async function saveData() {
   localStorage.setItem(PROFILE.storageKey, JSON.stringify(DB));
   try {
     // UPSERT: update kalau row ada, insert kalau belum ada (aman)
-    await sbFetch(`/rest/v1/user_data`, {
+    const res = await sbFetch(`/rest/v1/user_data`, {
       method: 'POST',
       headers: {
         'Prefer': 'resolution=merge-duplicates,return=minimal',
@@ -789,7 +818,16 @@ async function saveData() {
         updated_at: new Date().toISOString()
       })
     });
-  } catch(e) { /* localStorage already saved — offline mode */ }
+    if (!res.ok) {
+      const err = await res.json().catch(()=>({}));
+      console.error('[SAVE] Error:', res.status, err?.message || err?.hint || JSON.stringify(err));
+      _showDbError('Save gagal (' + res.status + '): ' + (err?.message || err?.hint || 'cek RLS policy'));
+    } else {
+      console.log('[SAVE] ✅ Saved to Supabase, profile:', PROFILE.id);
+    }
+  } catch(e) {
+    console.error('[SAVE] Network error:', e.message);
+  }
 }
 
 async function pinGetRemote() {
@@ -1519,20 +1557,136 @@ function clearAllData(){confirmDialog('Delete ALL data permanently?','Delete Eve
 // =====================================================
 const PIN_DIGITS=4, PIN_MAX_TRIES=3, PIN_LOCKOUT_S=30;
 let pinBuffer='', pinMode='check', pinFirst='', pinTries=0, pinLocked=false, pinLockTimer=null, pinRemote='';
-let autoLockTimer=null, autoLockBound=false;
-const AUTO_LOCK_MS=60*1000;
+let autoLockTimer=null, autoLockBound=false, sleepTimer=null;
+const AUTO_LOCK_MS   = 5 * 60 * 1000;  // 5 menit tidak aktif → kunci
+const SLEEP_WARN_MS  = 4 * 60 * 1000;  // 4 menit → tampilkan overlay sleep
+const SESSION_MS     = 30 * 60 * 1000; // 30 menit session auto-pass
+const SESSION_KEY    = 'xpenses_session';
+const LAST_PROF_KEY  = 'xpenses_last_profile';
+
+// ── Session helpers ──
+function saveSession(profileId) {
+  sessionStorage.setItem(SESSION_KEY, JSON.stringify({ profileId, ts: Date.now() }));
+}
+function getValidSession() {
+  try {
+    const s = JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null');
+    if (!s) return null;
+    if (Date.now() - s.ts > SESSION_MS) { sessionStorage.removeItem(SESSION_KEY); return null; }
+    return s;
+  } catch { return null; }
+}
+function clearSession() { sessionStorage.removeItem(SESSION_KEY); }
+
+// ── Sleep overlay helpers ──
+function showSleepOverlay() {
+  if (document.getElementById('_sleep-overlay')) return;
+  if (document.getElementById('pin-screen')?.style.display === 'flex') return;
+  const ov = document.createElement('div');
+  ov.id = '_sleep-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:99990;background:#00000090;backdrop-filter:blur(6px);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;animation:fadeIn .6s ease;';
+  ov.innerHTML = `
+    <style>@keyframes fadeIn{from{opacity:0}to{opacity:1}}</style>
+    <div style="text-align:center;color:#e2e8f0">
+      <div style="font-size:2.5rem;margin-bottom:12px">🔒</div>
+      <div style="font-size:1rem;font-weight:700;margin-bottom:6px">Layar akan dikunci</div>
+      <div style="font-size:.8rem;color:#94a3b8">Tap untuk tetap aktif</div>
+    </div>`;
+  ov.addEventListener('click', dismissSleepOverlay, { once: true });
+  document.body.appendChild(ov);
+}
+function dismissSleepOverlay() {
+  const ov = document.getElementById('_sleep-overlay');
+  if (ov) { ov.style.opacity = '0'; ov.style.transition = 'opacity .3s'; setTimeout(() => ov.remove(), 300); }
+  resetAutoLockTimer();
+}
+function removeSleepOverlay() {
+  const ov = document.getElementById('_sleep-overlay');
+  if (ov) ov.remove();
+}
 
 function pinUpdateDots(buf){document.querySelectorAll('.pin-dot').forEach((d,i)=>{d.style.background=i<buf.length?PROFILE.accent:'#2d3748';d.style.borderColor=i<buf.length?PROFILE.accent:'#3d4a63';d.style.transform=i<buf.length?'scale(1.15)':'scale(1)';});}
 function pinSetSubtitle(txt,color){const el=document.getElementById('pin-subtitle');el.textContent=txt;el.style.color=color||'#64748b';}
 function pinShowError(msg){document.getElementById('pin-error').textContent=msg;const dots=document.getElementById('pin-dots');dots.style.animation='none';dots.offsetHeight;dots.style.animation='pinShake .4s ease';setTimeout(()=>{document.getElementById('pin-error').textContent='';},1600);}
 
-function resetAutoLockTimer(){if(document.hidden)return;if(document.getElementById('pin-screen')?.style.display!=='none')return;if(autoLockTimer)clearTimeout(autoLockTimer);autoLockTimer=setTimeout(()=>pinLockNow('🔒 Terkunci otomatis (1 menit tidak aktif)'),AUTO_LOCK_MS);}
+function resetAutoLockTimer() {
+  if (document.hidden) return;
+  if (document.getElementById('pin-screen')?.style.display !== 'none') return;
+  // Bersihkan timer lama
+  if (autoLockTimer) clearTimeout(autoLockTimer);
+  if (sleepTimer)    clearTimeout(sleepTimer);
+  removeSleepOverlay();
+  // Sleep warning dulu (4 menit)
+  sleepTimer = setTimeout(showSleepOverlay, SLEEP_WARN_MS);
+  // Full lock setelah 5 menit
+  autoLockTimer = setTimeout(() => {
+    removeSleepOverlay();
+    pinLockNow('🔒 Terkunci otomatis karena tidak aktif');
+  }, AUTO_LOCK_MS);
+}
 
-function bindAutoLock(){if(autoLockBound)return;autoLockBound=true;['click','keydown','mousemove','mousedown','touchstart','scroll'].forEach(ev=>document.addEventListener(ev,()=>{if(document.getElementById('pin-screen')?.style.display==='none')resetAutoLockTimer();},{passive:true}));document.addEventListener('visibilitychange',()=>{if(document.hidden)pinLockNow('🔒 Terkunci karena tab ditinggal');else if(document.getElementById('pin-screen')?.style.display==='none')resetAutoLockTimer();});window.addEventListener('blur',()=>{if(document.getElementById('pin-screen')?.style.display==='none')pinLockNow('🔒 Terkunci karena jendela tidak aktif');});window.addEventListener('focus',()=>{if(document.getElementById('pin-screen')?.style.display==='none')resetAutoLockTimer();});}
+function bindAutoLock() {
+  if (autoLockBound) return;
+  autoLockBound = true;
+  // Setiap aktivitas user → reset timer
+  ['click','keydown','mousemove','mousedown','touchstart','scroll','pointerdown'].forEach(ev =>
+    document.addEventListener(ev, () => {
+      if (document.getElementById('pin-screen')?.style.display === 'none') resetAutoLockTimer();
+    }, { passive: true })
+  );
+  // Tab hidden → langsung kunci
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      if (sleepTimer)    clearTimeout(sleepTimer);
+      if (autoLockTimer) clearTimeout(autoLockTimer);
+      removeSleepOverlay();
+      pinLockNow('🔒 Terkunci karena tab / app ditinggal');
+    } else if (document.getElementById('pin-screen')?.style.display === 'none') {
+      resetAutoLockTimer();
+    }
+  });
+  // Window blur (switch app / minimize)
+  window.addEventListener('blur', () => {
+    if (document.getElementById('pin-screen')?.style.display === 'none') {
+      if (sleepTimer)    clearTimeout(sleepTimer);
+      if (autoLockTimer) clearTimeout(autoLockTimer);
+      removeSleepOverlay();
+      pinLockNow('🔒 Terkunci karena jendela tidak aktif');
+    }
+  });
+  window.addEventListener('focus', () => {
+    if (document.getElementById('pin-screen')?.style.display === 'none') resetAutoLockTimer();
+  });
+}
 
-function pinLockNow(reason='Masukkan PIN untuk masuk'){if(autoLockTimer){clearTimeout(autoLockTimer);autoLockTimer=null;}pinBuffer='';pinUpdateDots('');document.getElementById('pin-error').textContent='';pinMode='check';pinSetSubtitle(reason,'#64748b');document.getElementById('app').style.display='none';const ps=document.getElementById('pin-screen');ps.style.display='flex';ps.style.opacity='1';}
+function pinLockNow(reason='Masukkan PIN untuk masuk') {
+  if (autoLockTimer) { clearTimeout(autoLockTimer); autoLockTimer = null; }
+  if (sleepTimer)    { clearTimeout(sleepTimer);    sleepTimer    = null; }
+  removeSleepOverlay();
+  clearSession(); // hapus session saat dikunci
+  pinBuffer = ''; pinUpdateDots('');
+  document.getElementById('pin-error').textContent = '';
+  pinMode = 'check';
+  pinSetSubtitle(reason, '#64748b');
+  document.getElementById('app').style.display = 'none';
+  const ps = document.getElementById('pin-screen');
+  ps.style.display = 'flex'; ps.style.opacity = '1';
+}
 
-function pinUnlock(){document.querySelectorAll('.pin-dot').forEach(d=>{d.style.background='#22c55e';d.style.borderColor='#22c55e';});const ps=document.getElementById('pin-screen');setTimeout(()=>{ps.style.opacity='0';ps.style.transition='opacity .25s ease';setTimeout(()=>{ps.style.display='none';document.getElementById('app').style.display='';resetAutoLockTimer();setTimeout(()=>document.getElementById('qa-amount').focus(),100);},250);},280);}
+function pinUnlock() {
+  saveSession(PROFILE.id); // simpan session → auto-pass berikutnya
+  document.querySelectorAll('.pin-dot').forEach(d => { d.style.background = '#22c55e'; d.style.borderColor = '#22c55e'; });
+  const ps = document.getElementById('pin-screen');
+  setTimeout(() => {
+    ps.style.opacity = '0'; ps.style.transition = 'opacity .25s ease';
+    setTimeout(() => {
+      ps.style.display = 'none';
+      document.getElementById('app').style.display = '';
+      resetAutoLockTimer();
+      setTimeout(() => document.getElementById('qa-amount').focus(), 100);
+    }, 250);
+  }, 280);
+}
 
 async function pinPress(digit){
   if(pinLocked)return;if(pinBuffer.length>=PIN_DIGITS)return;
@@ -1558,54 +1712,91 @@ document.addEventListener('keydown',e=>{const ps=document.getElementById('pin-sc
 // =====================================================
 async function selectProfile(key) {
   PROFILE = PROFILES[key];
+  localStorage.setItem(LAST_PROF_KEY, key); // ingat profil terakhir
   applyTheme(PROFILE);
-  // Show loading
-  document.getElementById('profile-screen').style.display='none';
-  const loader=document.createElement('div');
-  loader.style.cssText='position:fixed;inset:0;background:#0f1117;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:99997;';
-  loader.innerHTML=`<img src="${PROFILE.avatar}" width="64" height="64" style="border-radius:16px;margin-bottom:16px;opacity:.9"><div style="color:${PROFILE.accent};font-size:.9rem;font-weight:600">Memuat data ${PROFILE.name}...</div>`;
+  document.getElementById('profile-screen').style.display = 'none';
+
+  // Loading screen
+  const loader = document.createElement('div');
+  loader.id = '_init-loader';
+  loader.style.cssText = 'position:fixed;inset:0;background:#0f1117;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:99997;';
+  loader.innerHTML = `<img src="${PROFILE.avatar}" width="64" height="64" style="border-radius:16px;margin-bottom:16px;opacity:.9;object-fit:cover"><div style="color:${PROFILE.accent};font-size:.9rem;font-weight:600;letter-spacing:.3px">Memuat data ${PROFILE.name}...</div><div style="color:#64748b;font-size:.75rem;margin-top:6px">Menghubungkan ke cloud</div>`;
   document.body.appendChild(loader);
+
   try {
     await initDB();
     pinRemote = await pinGetRemote();
     populateQuickAdd();
     setQACurrency('THB');
     renderDashboard();
-  } catch(e) { console.error(e); }
+  } catch(e) { console.error('[XPENSES] Init error:', e); }
+
   loader.remove();
-  // Show PIN
-  const ps=document.getElementById('pin-screen');
-  ps.style.display='flex'; ps.style.opacity='1';
-  document.getElementById('app').style.display='none';
-  if(!pinRemote){pinMode='set';pinSetSubtitle('Buat PIN 4 digit baru','#94a3b8');}
-  else{pinMode='check';pinSetSubtitle('Masukkan PIN untuk masuk','#64748b');}
-  pinBuffer='';pinUpdateDots('');document.getElementById('pin-error').textContent='';
   bindAutoLock();
+
+  // ── AUTO-PASS: cek session aktif ──
+  const session = getValidSession();
+  if (session && session.profileId === PROFILE.id) {
+    console.log('[AUTH] ✅ Auto-pass — session masih valid');
+    // Langsung masuk tanpa PIN
+    document.getElementById('pin-screen').style.display = 'none';
+    document.getElementById('app').style.display = '';
+    resetAutoLockTimer();
+    toast(`👋 Selamat datang kembali, ${PROFILE.name.replace('Xpenses','').trim()}!`, 'success', 2000);
+    setTimeout(() => document.getElementById('qa-amount').focus(), 200);
+    return;
+  }
+
+  // Tampilkan PIN screen
+  const ps = document.getElementById('pin-screen');
+  ps.style.display = 'flex'; ps.style.opacity = '1';
+  document.getElementById('app').style.display = 'none';
+  if (!pinRemote) { pinMode = 'set'; pinSetSubtitle('Buat PIN 4 digit baru', '#94a3b8'); }
+  else            { pinMode = 'check'; pinSetSubtitle('Masukkan PIN untuk masuk', '#64748b'); }
+  pinBuffer = ''; pinUpdateDots('');
+  document.getElementById('pin-error').textContent = '';
 }
 
 function backToProfiles() {
-  // Lock app & reset
-  if(autoLockTimer){clearTimeout(autoLockTimer);autoLockTimer=null;}
-  document.getElementById('app').style.display='none';
-  document.getElementById('pin-screen').style.display='none';
-  // Reset DB
+  if (autoLockTimer) { clearTimeout(autoLockTimer); autoLockTimer = null; }
+  if (sleepTimer)    { clearTimeout(sleepTimer);    sleepTimer    = null; }
+  removeSleepOverlay();
+  clearSession();
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('pin-screen').style.display = 'none';
+  // Reset DB & state
   DB = { expenses:[],reimbursements:[],subscriptions:[],creditCards:[],ccTransactions:[],incomes:[],banks:[],bankMutasi:[],categories:[],accounts:[],settings:{} };
-  PROFILE = null;
-  pinRemote = '';
-  // Destroy charts
-  Object.keys(anCharts).forEach(k=>{try{anCharts[k].destroy();}catch{}});
-  anCharts={};
-  if(svChart){try{svChart.destroy();}catch{}svChart=null;}
-  // Show profile screen
-  document.getElementById('profile-screen').style.display='flex';
+  PROFILE = null; pinRemote = '';
+  Object.keys(anCharts).forEach(k=>{ try{anCharts[k].destroy();}catch{} }); anCharts = {};
+  if (svChart) { try{svChart.destroy();}catch{}  svChart = null; }
+  document.getElementById('profile-screen').style.display = 'flex';
 }
 
 // =====================================================
-// INIT — Show profile screen first
+// INIT — Auto-select last profile + Auto-pass session
 // =====================================================
-document.getElementById('profile-screen').style.display='flex';
-document.getElementById('pin-screen').style.display='none';
-document.getElementById('app').style.display='none';
+(async function init() {
+  document.getElementById('profile-screen').style.display = 'none';
+  document.getElementById('pin-screen').style.display     = 'none';
+  document.getElementById('app').style.display            = 'none';
+
+  const lastKey = localStorage.getItem(LAST_PROF_KEY);
+  const session  = getValidSession();
+
+  if (lastKey && PROFILES[lastKey]) {
+    // Ada profil terakhir → langsung load tanpa pilih profil
+    if (session && session.profileId === PROFILES[lastKey].id) {
+      // Session masih valid → auto-pass full (skip profil + PIN)
+      await selectProfile(lastKey); // akan auto-pass karena session valid
+    } else {
+      // Profil diingat tapi session habis → tampilkan PIN langsung
+      await selectProfile(lastKey);
+    }
+  } else {
+    // Pertama kali / belum pernah pilih profil
+    document.getElementById('profile-screen').style.display = 'flex';
+  }
+})();
 
 // =====================================================
 // PWA — Service Worker + Deeplink Shortcuts
