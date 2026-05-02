@@ -1,0 +1,54 @@
+{
+  "name": "XpensesApp",
+  "short_name": "XpensesApp",
+  "description": "Personal Finance Tracker — PenXpenses & AsekXpenses",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f1117",
+  "theme_color": "#0f1117",
+  "lang": "id",
+  "categories": ["finance", "productivity"],
+  "icons": [
+    {
+      "src": "https://i.ibb.co/VXq0RWQ/ur-pin-large-front-square-600x600-removebg-preview.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://i.ibb.co/VXq0RWQ/ur-pin-large-front-square-600x600-removebg-preview.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "PenXpenses",
+      "short_name": "Pen",
+      "description": "Buka PenXpenses",
+      "url": "./index.html?profile=pen",
+      "icons": [
+        {
+          "src": "https://i.ibb.co/Ngtx8c19/urso-cora-o.gif",
+          "sizes": "96x96"
+        }
+      ]
+    },
+    {
+      "name": "AsekXpenses",
+      "short_name": "Asek",
+      "description": "Buka AsekXpenses",
+      "url": "./index.html?profile=asek",
+      "icons": [
+        {
+          "src": "https://i.ibb.co/VXq0RWQ/ur-pin-large-front-square-600x600-removebg-preview.png",
+          "sizes": "96x96"
+        }
+      ]
+    }
+  ]
+}
