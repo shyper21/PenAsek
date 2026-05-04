@@ -696,22 +696,18 @@ textarea.form-input{resize:vertical;min-height:70px}
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
-// =====================================================
-// ★ SATU SUPABASE — ganti URL & KEY sesuai project kamu
-// ★ Gunakan salah satu project (asek atau pen), lalu
-//   pastikan tabel user_data & user_pin sudah ada dengan
-//   kolom id TEXT PRIMARY KEY, data JSONB, updated_at TIMESTAMPTZ
-// =====================================================
 const SUPABASE_URL = 'https://onegwkcxlfccatrxtnet.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9uZWd3a2N4bGZjY2F0cnh0bmV0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc2NjI3NzksImV4cCI6MjA5MzIzODc3OX0.mDy0N10e5tWsT-pC95b3aG4XJ-3_oyFrw2sGyh2s8QI';
 
 // =====================================================
-// PROFILE CONFIG — kedua user pakai 1 Supabase
-// Row: pacar_main (pen) & hachiman_main (asek) — sesuai Supabase
+// PROFILE CONFIG
+// ★ FIX: pinId disesuaikan dengan row yang ada di tabel user_pin Supabase
+//   user_pin rows: hachiman_pin (asek) dan pacar_pin (pen)
 // =====================================================
 const PROFILES = {
   pen: {
-    id: 'pacar_main',         // ← row id di Supabase (harus sama dengan kolom id di tabel user_data & user_pin)
+    id: 'pacar_main',
+    pinId: 'pacar_pin',          // ← ✅ sesuai row di tabel user_pin
     name: 'PenXpenses',
     label: 'PenXpenses ❤️',
     accent: '#ee2456',
@@ -721,7 +717,8 @@ const PROFILES = {
     pinSecret: 'asekganteng',
   },
   asek: {
-    id: 'hachiman_main',     // ← row id di Supabase
+    id: 'hachiman_main',
+    pinId: 'hachiman_pin',       // ← ✅ sesuai row di tabel user_pin
     name: 'AsekXpenses',
     label: 'AsekXpenses 🎯',
     accent: '#6366f1',
@@ -732,11 +729,8 @@ const PROFILES = {
   }
 };
 
-let PROFILE = null; // set after profile selection
+let PROFILE = null;
 
-// =====================================================
-// APPLY THEME
-// =====================================================
 function applyTheme(p) {
   document.documentElement.style.setProperty('--accent', p.accent);
   document.documentElement.style.setProperty('--accent2', p.accent2);
@@ -748,9 +742,6 @@ function applyTheme(p) {
   document.getElementById('pin-avatar').src = p.avatar;
 }
 
-// =====================================================
-// SUPABASE HELPERS (parameterized by profile row)
-// =====================================================
 async function sbFetch(path, opts = {}) {
   return fetch(SUPABASE_URL + path, {
     ...opts,
@@ -764,34 +755,23 @@ async function sbFetch(path, opts = {}) {
 }
 
 async function loadData() {
-  console.log('[LOAD] Fetching profile:', PROFILE.id, '| URL:', SUPABASE_URL);
+  console.log('[LOAD] Fetching profile:', PROFILE.id);
   try {
     const res = await sbFetch(`/rest/v1/user_data?id=eq.${PROFILE.id}&select=data`);
-    console.log('[LOAD] HTTP status:', res.status, res.statusText);
     const rows = await res.json();
-    console.log('[LOAD] Rows returned:', JSON.stringify(rows).slice(0, 200));
-
     if (!res.ok) {
       const errMsg = rows?.message || rows?.hint || JSON.stringify(rows);
-      console.error('[LOAD] Supabase error:', errMsg);
       _showDbError('Load gagal: ' + errMsg);
     }
-
-    if (rows && rows.length > 0 && rows[0].data) {
-      console.log('[LOAD] ✅ Data loaded OK dari Supabase');
-      return rows[0].data;
-    }
-    console.warn('[LOAD] Row kosong — cek ID atau RLS policy');
+    if (rows && rows.length > 0 && rows[0].data) return rows[0].data;
     _showDbError('Row tidak ditemukan untuk id=' + PROFILE.id + '. Cek Supabase RLS policy!');
     return null;
   } catch(e) {
-    console.error('[LOAD] Network/parse error:', e.message);
     _showDbError('Offline/Network error — pakai localStorage');
     try { const r = localStorage.getItem(PROFILE.storageKey); return r ? JSON.parse(r) : null; } catch(_) { return null; }
   }
 }
 
-// Helper: tampilkan error banner di atas app
 function _showDbError(msg) {
   const existing = document.getElementById('_db-error-banner');
   if (existing) existing.remove();
@@ -805,12 +785,9 @@ function _showDbError(msg) {
 async function saveData() {
   localStorage.setItem(PROFILE.storageKey, JSON.stringify(DB));
   try {
-    // UPSERT: update kalau row ada, insert kalau belum ada (aman)
     const res = await sbFetch(`/rest/v1/user_data`, {
       method: 'POST',
-      headers: {
-        'Prefer': 'resolution=merge-duplicates,return=minimal',
-      },
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({
         id: PROFILE.id,
         user_key: PROFILE.id.replace('_main', ''),
@@ -820,40 +797,42 @@ async function saveData() {
     });
     if (!res.ok) {
       const err = await res.json().catch(()=>({}));
-      console.error('[SAVE] Error:', res.status, err?.message || err?.hint || JSON.stringify(err));
       _showDbError('Save gagal (' + res.status + '): ' + (err?.message || err?.hint || 'cek RLS policy'));
-    } else {
-      console.log('[SAVE] ✅ Saved to Supabase, profile:', PROFILE.id);
     }
-  } catch(e) {
-    console.error('[SAVE] Network error:', e.message);
-  }
+  } catch(e) { console.error('[SAVE] Network error:', e.message); }
 }
 
+// =====================================================
+// PIN REMOTE — ★ FIX: gunakan PROFILE.pinId bukan PROFILE.id
+// =====================================================
 async function pinGetRemote() {
   try {
-    const res = await sbFetch(`/rest/v1/user_pin?id=eq.${PROFILE.id}&select=pin_hash`);
+    // ✅ Query pakai pinId (pacar_pin / hachiman_pin) — sesuai row di Supabase
+    const res = await sbFetch(`/rest/v1/user_pin?id=eq.${PROFILE.pinId}&select=pin_hash`);
     const rows = await res.json();
+    console.log('[PIN] Loaded from pinId:', PROFILE.pinId, '| hash:', rows?.[0]?.pin_hash || 'EMPTY');
     return rows?.[0]?.pin_hash || '';
-  } catch(e) { return ''; }
+  } catch(e) {
+    console.error('[PIN] Failed to load:', e);
+    return '';
+  }
 }
 
 async function pinSaveRemote(pin) {
   pinRemote = pin;
   try {
-    // UPSERT: aman dipakai walau row belum ada
+    // ✅ Upsert pakai pinId — supaya update row yang sudah ada
     await sbFetch(`/rest/v1/user_pin`, {
       method: 'POST',
-      headers: {
-        'Prefer': 'resolution=merge-duplicates,return=minimal',
-      },
+      headers: { 'Prefer': 'resolution=merge-duplicates,return=minimal' },
       body: JSON.stringify({
-        id: PROFILE.id,
+        id: PROFILE.pinId,       // ← ✅ pacar_pin atau hachiman_pin
         pin_hash: pin,
         updated_at: new Date().toISOString()
       })
     });
-  } catch(e) {}
+    console.log('[PIN] Saved to pinId:', PROFILE.pinId);
+  } catch(e) { console.error('[PIN] Save failed:', e); }
 }
 
 // =====================================================
@@ -885,7 +864,7 @@ const DEFAULT_SETTINGS = {
 const PRESET_COLORS = ['#ef4444','#f97316','#f59e0b','#22c55e','#10b981','#06b6d4','#3b82f6','#6366f1','#a855f7','#ec4899','#94a3b8','#64748b','#ffffff'];
 const BANK_COLORS   = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#a855f7','#06b6d4','#ec4899','#6366f1','#10b981','#94a3b8'];
 
-let DB = { expenses:[], reimbursements:[], subscriptions:[], creditCards:[], ccTransactions:[], incomes:[], banks:[], bankMutasi:[], categories:[], accounts:[], settings:{} };
+let DB = { expenses:[],reimbursements:[],subscriptions:[],creditCards:[],ccTransactions:[],incomes:[],banks:[],bankMutasi:[],categories:[],accounts:[],settings:{} };
 
 async function initDB() {
   const saved = await loadData();
@@ -1241,16 +1220,8 @@ function renderBudget() {
     const ci=expenses.filter(e=>e.category===cat.id&&e.currency==='IDR').reduce((s,e)=>s+parseFloat(e.amount),0);
     if(!ct&&!ci&&!cat.budgetTHB&&!cat.budgetIDR) return;
     html+=`<div class="card" style="padding:12px;margin-bottom:8px"><div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><div style="width:10px;height:10px;border-radius:50%;background:${cat.color}"></div><span style="font-size:.85rem;font-weight:700">${escHtml(cat.name)}</span></div>`;
-    if(ct>0||cat.budgetTHB){
-      const p=cat.budgetTHB>0?Math.min((ct/cat.budgetTHB)*100,100):0;
-      html+=`<div style="font-size:.78rem;color:var(--text3);margin-bottom:3px">THB: <span style="color:#4ade80;font-weight:600">${fmtAmount(ct,'THB')}</span>${cat.budgetTHB?` / ${fmtAmount(cat.budgetTHB,'THB')}`:''}</div>`;
-      if(cat.budgetTHB) html+=`<div class="progress-bar" style="margin-bottom:6px"><div class="progress-fill" style="width:${p}%;background:${barC(p)}"></div></div>`;
-    }
-    if(ci>0||cat.budgetIDR){
-      const p=cat.budgetIDR>0?Math.min((ci/cat.budgetIDR)*100,100):0;
-      html+=`<div style="font-size:.78rem;color:var(--text3);margin-bottom:3px">IDR: <span style="color:#60a5fa;font-weight:600">${fmtAmount(ci,'IDR')}</span>${cat.budgetIDR?` / ${fmtAmount(cat.budgetIDR,'IDR')}`:''}</div>`;
-      if(cat.budgetIDR) html+=`<div class="progress-bar"><div class="progress-fill" style="width:${p}%;background:${barC(p)}"></div></div>`;
-    }
+    if(ct>0||cat.budgetTHB){const p=cat.budgetTHB>0?Math.min((ct/cat.budgetTHB)*100,100):0;html+=`<div style="font-size:.78rem;color:var(--text3);margin-bottom:3px">THB: <span style="color:#4ade80;font-weight:600">${fmtAmount(ct,'THB')}</span>${cat.budgetTHB?` / ${fmtAmount(cat.budgetTHB,'THB')}`:''}</div>`;if(cat.budgetTHB)html+=`<div class="progress-bar" style="margin-bottom:6px"><div class="progress-fill" style="width:${p}%;background:${barC(p)}"></div></div>`;}
+    if(ci>0||cat.budgetIDR){const p=cat.budgetIDR>0?Math.min((ci/cat.budgetIDR)*100,100):0;html+=`<div style="font-size:.78rem;color:var(--text3);margin-bottom:3px">IDR: <span style="color:#60a5fa;font-weight:600">${fmtAmount(ci,'IDR')}</span>${cat.budgetIDR?` / ${fmtAmount(cat.budgetIDR,'IDR')}`:''}</div>`;if(cat.budgetIDR)html+=`<div class="progress-bar"><div class="progress-fill" style="width:${p}%;background:${barC(p)}"></div></div>`;}
     html+=`</div>`;
   });
   document.getElementById('budget-content').innerHTML = html;
@@ -1296,12 +1267,7 @@ function renderSubs() {
   const subs=[...DB.subscriptions].sort((a,b)=>a.name.localeCompare(b.name));
   const list=document.getElementById('subs-list');
   if(!subs.length){list.innerHTML=`<div class="empty"><div class="empty-icon">📅</div><div class="empty-text">No subscriptions tracked yet.</div></div>`;return;}
-  list.innerHTML=subs.map(s=>{
-    const dl=getDaysUntilBillingDay(s.day);
-    const dc=dl<=3?'overdue':dl<=7?'soon':'';
-    const lbl=dl===0?'Due today!':dl<0?'Was due':`Due in ${dl}d`;
-    return`<div class="sub-item"><div class="sub-icon">${escHtml(s.icon)}</div><div class="sub-info"><div class="sub-name">${escHtml(s.name)}</div><div class="sub-meta">${s.cycle==='monthly'?'Monthly':'Yearly'} &middot; Day ${s.day}${s.notes?' &middot; '+escHtml(s.notes):''}</div></div><div class="sub-right"><div class="sub-amount">${fmtAmount(s.amount,s.currency)}</div><div class="sub-due ${dc}">${lbl}</div><div style="display:flex;gap:4px;justify-content:flex-end;margin-top:4px"><button class="btn btn-xs btn-primary" onclick="logSubAsExpense('${s.id}')">Log</button><button class="btn btn-xs btn-secondary" onclick="editSub('${s.id}')">Edit</button><button class="btn btn-xs btn-danger" onclick="deleteSub('${s.id}')">Del</button></div></div></div>`;
-  }).join('');
+  list.innerHTML=subs.map(s=>{const dl=getDaysUntilBillingDay(s.day);const dc=dl<=3?'overdue':dl<=7?'soon':'';const lbl=dl===0?'Due today!':dl<0?'Was due':`Due in ${dl}d`;return`<div class="sub-item"><div class="sub-icon">${escHtml(s.icon)}</div><div class="sub-info"><div class="sub-name">${escHtml(s.name)}</div><div class="sub-meta">${s.cycle==='monthly'?'Monthly':'Yearly'} &middot; Day ${s.day}${s.notes?' &middot; '+escHtml(s.notes):''}</div></div><div class="sub-right"><div class="sub-amount">${fmtAmount(s.amount,s.currency)}</div><div class="sub-due ${dc}">${lbl}</div><div style="display:flex;gap:4px;justify-content:flex-end;margin-top:4px"><button class="btn btn-xs btn-primary" onclick="logSubAsExpense('${s.id}')">Log</button><button class="btn btn-xs btn-secondary" onclick="editSub('${s.id}')">Edit</button><button class="btn btn-xs btn-danger" onclick="deleteSub('${s.id}')">Del</button></div></div></div>`;}).join('');
 }
 function editSub(id){const s=DB.subscriptions.find(x=>x.id===id);if(!s)return;editingSubId=id;document.getElementById('sub-modal-title').textContent='Edit Subscription';document.getElementById('sub-name').value=s.name;document.getElementById('sub-amount').value=s.amount;document.getElementById('sub-currency').value=s.currency;document.getElementById('sub-day').value=s.day;document.getElementById('sub-cycle').value=s.cycle;document.getElementById('sub-icon').value=s.icon;document.getElementById('sub-notes').value=s.notes||'';openModal('modal-sub');}
 function deleteSub(id){const s=DB.subscriptions.find(x=>x.id===id);confirmDialog(`Delete "${s?.name}"?`,'Delete',()=>{DB.subscriptions=DB.subscriptions.filter(x=>x.id!==id);saveData();toast('Deleted','warning');renderSubs();});}
@@ -1322,19 +1288,13 @@ document.getElementById('save-cc-btn').addEventListener('click',()=>{
 });
 function renderCreditCards() {
   const ccList=document.getElementById('cc-list');
-  ccList.innerHTML=!DB.creditCards.length?`<div class="empty"><div class="empty-icon">💳</div><div class="empty-text">No credit cards added yet.</div></div>`:DB.creditCards.map(cc=>{
-    const bal=DB.ccTransactions.filter(t=>t.ccId===cc.id).reduce((s,t)=>s+parseFloat(t.amount),0);
-    const pct=cc.limit>0?Math.min((bal/cc.limit)*100,100):0;
-    const uc=pct>=90?'var(--red)':pct>=70?'var(--yellow)':'var(--blue)';
-    return`<div class="cc-card"><div class="cc-name">${escHtml(cc.name)}</div><div class="cc-limit">${cc.currency} &middot; Limit: ${cc.limit?fmtAmount(cc.limit,cc.currency):'No limit'} &middot; Billing: ${cc.billingDay||'N/A'}</div><div class="cc-balance">Balance: ${fmtAmount(bal,cc.currency)}</div>${cc.limit?`<div class="progress-bar" style="margin-top:6px"><div class="progress-fill" style="width:${pct}%;background:${uc}"></div></div><div class="progress-text"><span>${pct.toFixed(1)}% used</span><span>${fmtAmount(cc.limit-bal,cc.currency)} available</span></div>`:''}<div class="cc-actions"><button class="btn btn-secondary btn-xs" onclick="editCC('${cc.id}')">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteCC('${cc.id}')">Delete</button></div></div>`;
-  }).join('');
+  ccList.innerHTML=!DB.creditCards.length?`<div class="empty"><div class="empty-icon">💳</div><div class="empty-text">No credit cards added yet.</div></div>`:DB.creditCards.map(cc=>{const bal=DB.ccTransactions.filter(t=>t.ccId===cc.id).reduce((s,t)=>s+parseFloat(t.amount),0);const pct=cc.limit>0?Math.min((bal/cc.limit)*100,100):0;const uc=pct>=90?'var(--red)':pct>=70?'var(--yellow)':'var(--blue)';return`<div class="cc-card"><div class="cc-name">${escHtml(cc.name)}</div><div class="cc-limit">${cc.currency} &middot; Limit: ${cc.limit?fmtAmount(cc.limit,cc.currency):'No limit'} &middot; Billing: ${cc.billingDay||'N/A'}</div><div class="cc-balance">Balance: ${fmtAmount(bal,cc.currency)}</div>${cc.limit?`<div class="progress-bar" style="margin-top:6px"><div class="progress-fill" style="width:${pct}%;background:${uc}"></div></div><div class="progress-text"><span>${pct.toFixed(1)}% used</span><span>${fmtAmount(cc.limit-bal,cc.currency)} available</span></div>`:''}<div class="cc-actions"><button class="btn btn-secondary btn-xs" onclick="editCC('${cc.id}')">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteCC('${cc.id}')">Delete</button></div></div>`;}).join('');
   const allTxns=[...DB.ccTransactions].sort((a,b)=>b.date.localeCompare(a.date));
   document.getElementById('cc-txns-list').innerHTML=!allTxns.length?`<div class="empty"><div class="empty-text">No CC transactions yet.</div></div>`:allTxns.map(t=>{const cc=getCCById(t.ccId);const cat=getCategoryById(t.category);return`<div class="expense-item"><div class="expense-cat-dot" style="background:${cat.color}"></div><div class="expense-info"><div class="expense-name">${escHtml(t.name)}</div><div class="expense-meta">${escHtml(cc?.name||'?')} &middot; <span class="cat-pill" style="background:${cat.color}20;color:${cat.color}">${escHtml(cat.name)}</span></div></div><div class="expense-right"><div class="expense-amount ${t.currency.toLowerCase()}">${fmtAmount(t.amount,t.currency)}</div><div class="expense-date">${fmtDate(t.date)}</div></div></div>`;}).join('');
 }
 function editCC(id){const cc=DB.creditCards.find(x=>x.id===id);if(!cc)return;editingCCId=id;document.getElementById('cc-modal-title').textContent='Edit Card';document.getElementById('cc-name-input').value=cc.name;document.getElementById('cc-limit').value=cc.limit||'';document.getElementById('cc-currency').value=cc.currency;document.getElementById('cc-billing-day').value=cc.billingDay||'';document.getElementById('cc-statement-day').value=cc.statementDay||'';openModal('modal-cc');}
 function deleteCC(id){const cc=DB.creditCards.find(x=>x.id===id);confirmDialog(`Delete card "${cc?.name}"?`,'Delete',()=>{DB.creditCards=DB.creditCards.filter(x=>x.id!==id);DB.ccTransactions=DB.ccTransactions.filter(t=>t.ccId!==id);DB.expenses=DB.expenses.map(e=>e.ccId===id?{...e,ccId:''}:e);saveData();toast('Deleted','warning');renderCreditCards();});}
 
-// CSV Exports
 document.getElementById('export-cc-csv').addEventListener('click',()=>{
   const rows=[['Date','Card','Name','Category','Amount','Currency','Remarks']];
   DB.ccTransactions.sort((a,b)=>a.date.localeCompare(b.date)).forEach(t=>{const cc=getCCById(t.ccId);const cat=getCategoryById(t.category);rows.push([t.date,cc?.name||'',t.name,cat.name,t.amount,t.currency,t.remarks||'']);});
@@ -1358,15 +1318,7 @@ function destroyAnChart(id){
 }
 function getAnalyticsMonths(rv){
   const now=new Date();
-  if(rv==='all'){
-    const all=DB.expenses.map(e=>monthKey(e.date)).filter(Boolean);
-    if(!all.length)return[now.toISOString().slice(0,7)];
-    let[y,m]=all.sort()[0].split('-').map(Number);
-    const[ey,em]=[now.getFullYear(),now.getMonth()+1];
-    const months=[];
-    while(y<ey||(y===ey&&m<=em)){months.push(`${y}-${String(m).padStart(2,'0')}`);m++;if(m>12){m=1;y++;}if(months.length>120)break;}
-    return months;
-  }
+  if(rv==='all'){const all=DB.expenses.map(e=>monthKey(e.date)).filter(Boolean);if(!all.length)return[now.toISOString().slice(0,7)];let[y,m]=all.sort()[0].split('-').map(Number);const[ey,em]=[now.getFullYear(),now.getMonth()+1];const months=[];while(y<ey||(y===ey&&m<=em)){months.push(`${y}-${String(m).padStart(2,'0')}`);m++;if(m>12){m=1;y++;}if(months.length>120)break;}return months;}
   const n=parseInt(rv),months=[];
   for(let i=n-1;i>=0;i--){const d=new Date(now.getFullYear(),now.getMonth()-i,1);months.push(d.toISOString().slice(0,7));}
   return months;
@@ -1558,13 +1510,12 @@ function clearAllData(){confirmDialog('Delete ALL data permanently?','Delete Eve
 const PIN_DIGITS=4, PIN_MAX_TRIES=3, PIN_LOCKOUT_S=30;
 let pinBuffer='', pinMode='check', pinFirst='', pinTries=0, pinLocked=false, pinLockTimer=null, pinRemote='';
 let autoLockTimer=null, autoLockBound=false, sleepTimer=null;
-const AUTO_LOCK_MS   = 5 * 60 * 1000;  // 5 menit tidak aktif → kunci
-const SLEEP_WARN_MS  = 4 * 60 * 1000;  // 4 menit → tampilkan overlay sleep
-const SESSION_MS     = 30 * 60 * 1000; // 30 menit session auto-pass
+const AUTO_LOCK_MS   = 5 * 60 * 1000;
+const SLEEP_WARN_MS  = 4 * 60 * 1000;
+const SESSION_MS     = 30 * 60 * 1000;
 const SESSION_KEY    = 'xpenses_session';
 const LAST_PROF_KEY  = 'xpenses_last_profile';
 
-// ── Session helpers ──
 function saveSession(profileId) {
   sessionStorage.setItem(SESSION_KEY, JSON.stringify({ profileId, ts: Date.now() }));
 }
@@ -1578,20 +1529,13 @@ function getValidSession() {
 }
 function clearSession() { sessionStorage.removeItem(SESSION_KEY); }
 
-// ── Sleep overlay helpers ──
 function showSleepOverlay() {
   if (document.getElementById('_sleep-overlay')) return;
   if (document.getElementById('pin-screen')?.style.display === 'flex') return;
   const ov = document.createElement('div');
   ov.id = '_sleep-overlay';
   ov.style.cssText = 'position:fixed;inset:0;z-index:99990;background:#00000090;backdrop-filter:blur(6px);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;animation:fadeIn .6s ease;';
-  ov.innerHTML = `
-    <style>@keyframes fadeIn{from{opacity:0}to{opacity:1}}</style>
-    <div style="text-align:center;color:#e2e8f0">
-      <div style="font-size:2.5rem;margin-bottom:12px">🔒</div>
-      <div style="font-size:1rem;font-weight:700;margin-bottom:6px">Layar akan dikunci</div>
-      <div style="font-size:.8rem;color:#94a3b8">Tap untuk tetap aktif</div>
-    </div>`;
+  ov.innerHTML = `<style>@keyframes fadeIn{from{opacity:0}to{opacity:1}}</style><div style="text-align:center;color:#e2e8f0"><div style="font-size:2.5rem;margin-bottom:12px">🔒</div><div style="font-size:1rem;font-weight:700;margin-bottom:6px">Layar akan dikunci</div><div style="font-size:.8rem;color:#94a3b8">Tap untuk tetap aktif</div></div>`;
   ov.addEventListener('click', dismissSleepOverlay, { once: true });
   document.body.appendChild(ov);
 }
@@ -1612,13 +1556,10 @@ function pinShowError(msg){document.getElementById('pin-error').textContent=msg;
 function resetAutoLockTimer() {
   if (document.hidden) return;
   if (document.getElementById('pin-screen')?.style.display !== 'none') return;
-  // Bersihkan timer lama
   if (autoLockTimer) clearTimeout(autoLockTimer);
   if (sleepTimer)    clearTimeout(sleepTimer);
   removeSleepOverlay();
-  // Sleep warning dulu (4 menit)
   sleepTimer = setTimeout(showSleepOverlay, SLEEP_WARN_MS);
-  // Full lock setelah 5 menit
   autoLockTimer = setTimeout(() => {
     removeSleepOverlay();
     pinLockNow('🔒 Terkunci otomatis karena tidak aktif');
@@ -1628,13 +1569,11 @@ function resetAutoLockTimer() {
 function bindAutoLock() {
   if (autoLockBound) return;
   autoLockBound = true;
-  // Setiap aktivitas user → reset timer
   ['click','keydown','mousemove','mousedown','touchstart','scroll','pointerdown'].forEach(ev =>
     document.addEventListener(ev, () => {
       if (document.getElementById('pin-screen')?.style.display === 'none') resetAutoLockTimer();
     }, { passive: true })
   );
-  // Tab hidden → langsung kunci
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       if (sleepTimer)    clearTimeout(sleepTimer);
@@ -1645,7 +1584,6 @@ function bindAutoLock() {
       resetAutoLockTimer();
     }
   });
-  // Window blur (switch app / minimize)
   window.addEventListener('blur', () => {
     if (document.getElementById('pin-screen')?.style.display === 'none') {
       if (sleepTimer)    clearTimeout(sleepTimer);
@@ -1663,7 +1601,7 @@ function pinLockNow(reason='Masukkan PIN untuk masuk') {
   if (autoLockTimer) { clearTimeout(autoLockTimer); autoLockTimer = null; }
   if (sleepTimer)    { clearTimeout(sleepTimer);    sleepTimer    = null; }
   removeSleepOverlay();
-  clearSession(); // hapus session saat dikunci
+  clearSession();
   pinBuffer = ''; pinUpdateDots('');
   document.getElementById('pin-error').textContent = '';
   pinMode = 'check';
@@ -1674,7 +1612,7 @@ function pinLockNow(reason='Masukkan PIN untuk masuk') {
 }
 
 function pinUnlock() {
-  saveSession(PROFILE.id); // simpan session → auto-pass berikutnya
+  saveSession(PROFILE.id);
   document.querySelectorAll('.pin-dot').forEach(d => { d.style.background = '#22c55e'; d.style.borderColor = '#22c55e'; });
   const ps = document.getElementById('pin-screen');
   setTimeout(() => {
@@ -1712,11 +1650,10 @@ document.addEventListener('keydown',e=>{const ps=document.getElementById('pin-sc
 // =====================================================
 async function selectProfile(key) {
   PROFILE = PROFILES[key];
-  localStorage.setItem(LAST_PROF_KEY, key); // ingat profil terakhir
+  localStorage.setItem(LAST_PROF_KEY, key);
   applyTheme(PROFILE);
   document.getElementById('profile-screen').style.display = 'none';
 
-  // Loading screen
   const loader = document.createElement('div');
   loader.id = '_init-loader';
   loader.style.cssText = 'position:fixed;inset:0;background:#0f1117;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:99997;';
@@ -1725,7 +1662,7 @@ async function selectProfile(key) {
 
   try {
     await initDB();
-    pinRemote = await pinGetRemote();
+    pinRemote = await pinGetRemote(); // ← sekarang pakai PROFILE.pinId, bukan PROFILE.id
     populateQuickAdd();
     setQACurrency('THB');
     renderDashboard();
@@ -1734,11 +1671,9 @@ async function selectProfile(key) {
   loader.remove();
   bindAutoLock();
 
-  // ── AUTO-PASS: cek session aktif ──
   const session = getValidSession();
   if (session && session.profileId === PROFILE.id) {
     console.log('[AUTH] ✅ Auto-pass — session masih valid');
-    // Langsung masuk tanpa PIN
     document.getElementById('pin-screen').style.display = 'none';
     document.getElementById('app').style.display = '';
     resetAutoLockTimer();
@@ -1747,7 +1682,6 @@ async function selectProfile(key) {
     return;
   }
 
-  // Tampilkan PIN screen
   const ps = document.getElementById('pin-screen');
   ps.style.display = 'flex'; ps.style.opacity = '1';
   document.getElementById('app').style.display = 'none';
@@ -1764,7 +1698,6 @@ function backToProfiles() {
   clearSession();
   document.getElementById('app').style.display = 'none';
   document.getElementById('pin-screen').style.display = 'none';
-  // Reset DB & state
   DB = { expenses:[],reimbursements:[],subscriptions:[],creditCards:[],ccTransactions:[],incomes:[],banks:[],bankMutasi:[],categories:[],accounts:[],settings:{} };
   PROFILE = null; pinRemote = '';
   Object.keys(anCharts).forEach(k=>{ try{anCharts[k].destroy();}catch{} }); anCharts = {};
@@ -1773,7 +1706,7 @@ function backToProfiles() {
 }
 
 // =====================================================
-// INIT — Auto-select last profile + Auto-pass session
+// INIT
 // =====================================================
 (async function init() {
   document.getElementById('profile-screen').style.display = 'none';
@@ -1784,38 +1717,22 @@ function backToProfiles() {
   const session  = getValidSession();
 
   if (lastKey && PROFILES[lastKey]) {
-    // Ada profil terakhir → langsung load tanpa pilih profil
-    if (session && session.profileId === PROFILES[lastKey].id) {
-      // Session masih valid → auto-pass full (skip profil + PIN)
-      await selectProfile(lastKey); // akan auto-pass karena session valid
-    } else {
-      // Profil diingat tapi session habis → tampilkan PIN langsung
-      await selectProfile(lastKey);
-    }
+    await selectProfile(lastKey);
   } else {
-    // Pertama kali / belum pernah pilih profil
     document.getElementById('profile-screen').style.display = 'flex';
   }
 })();
 
 // =====================================================
-// PWA — Service Worker + Deeplink Shortcuts
+// PWA
 // =====================================================
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', async () => {
     try {
       const reg = await navigator.serviceWorker.register('./service-worker.js', { scope: './' });
-      console.log('[SW] Registered:', reg.scope);
-
-      // Listen pesan dari SW (mis. SYNC_READY)
       navigator.serviceWorker.addEventListener('message', event => {
-        if (event.data?.type === 'SYNC_READY' && PROFILE) {
-          // Re-try save data yang pending saat offline tadi
-          saveData();
-        }
+        if (event.data?.type === 'SYNC_READY' && PROFILE) saveData();
       });
-
-      // Update SW kalau ada versi baru
       reg.addEventListener('updatefound', () => {
         const newWorker = reg.installing;
         newWorker?.addEventListener('statechange', () => {
@@ -1824,35 +1741,22 @@ if ('serviceWorker' in navigator) {
           }
         });
       });
-    } catch (e) {
-      console.warn('[SW] Registration failed:', e);
-    }
+    } catch (e) { console.warn('[SW] Registration failed:', e); }
   });
 }
 
-// =====================================================
-// PWA — Handle shortcut deeplink (?profile=pen/asek)
-// Memungkinkan "Add to Home Screen" langsung masuk profil
-// =====================================================
 (function handleDeeplink() {
   const params = new URLSearchParams(window.location.search);
   const profileParam = params.get('profile');
   if (profileParam && PROFILES[profileParam]) {
-    // Delay sedikit biar DOM ready
-    window.addEventListener('DOMContentLoaded', () => {
-      selectProfile(profileParam);
-    });
+    window.addEventListener('DOMContentLoaded', () => { selectProfile(profileParam); });
   }
 })();
 
-// =====================================================
-// PWA — Install prompt (A2HS)
-// =====================================================
 let deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
   deferredInstallPrompt = e;
-  // Tampilkan hint setelah app pertama kali dibuka
   setTimeout(() => {
     if (deferredInstallPrompt && !window.matchMedia('(display-mode: standalone)').matches) {
       toast('📲 Install app: tap menu browser → "Add to Home Screen"', 'success', 5000);
